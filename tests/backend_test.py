@@ -1,13 +1,24 @@
 """Serene Canvas backend API regression tests."""
 import os
 import uuid
+import io
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8002").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8001").rstrip("/")
 API = f"{BASE_URL}/api"
 ADMIN_EMAIL = "admin@website.com"
 ADMIN_PASSWORD = "Admin@777"
+
+
+def gif_bytes(width, height):
+    header = b"GIF89a"
+    logical_screen = width.to_bytes(2, "little") + height.to_bytes(2, "little") + b"\x80\x00\x00"
+    color_table = b"\x00\x00\x00\xff\xff\xff"
+    image_descriptor = b"\x2c\x00\x00\x00\x00" + width.to_bytes(2, "little") + height.to_bytes(2, "little") + b"\x00"
+    image_data = b"\x02\x02D\x01\x00"
+    trailer = b"\x3b"
+    return header + logical_screen + color_table + image_descriptor + image_data + trailer
 
 
 @pytest.fixture(scope="session")
@@ -201,11 +212,13 @@ def test_logout_clears(admin_session):
 
 # ---- Admin protected ----
 def test_admin_routes_unauth(session):
-    for path in ["/admin/posts", "/admin/stats"]:
+    for path in ["/admin/posts", "/admin/stats", "/admin/ads"]:
         r = session.get(f"{API}{path}", timeout=20)
         assert r.status_code == 401, f"{path} should be 401"
     r = session.post(f"{API}/admin/posts", json={"title": "x", "excerpt": "x", "content": "x", "category": "tech"}, timeout=20)
     assert r.status_code == 401
+    r2 = session.post(f"{API}/admin/ads", json={"category": "tech", "image_url": "/media/ads/x.gif", "hyperlink": "https://example.com", "status": "active"}, timeout=20)
+    assert r2.status_code == 401
 
 
 def test_admin_stats(admin_session):
@@ -239,3 +252,63 @@ def test_admin_crud(admin_session):
     assert r4.status_code == 200
     r5 = admin_session.put(f"{API}/admin/posts/{pid}", json={"title": "x"}, timeout=20)
     assert r5.status_code == 404
+
+
+def test_ad_upload_validation_and_crud(admin_session):
+    bad = admin_session.post(
+        f"{API}/admin/ads/upload",
+        files={"file": ("bad.gif", io.BytesIO(gif_bytes(300, 250)), "image/gif")},
+        timeout=20,
+    )
+    assert bad.status_code == 400
+    assert "728x90" in bad.json()["detail"].replace(" ", "")
+
+    good = admin_session.post(
+        f"{API}/admin/ads/upload",
+        files={"file": ("good.gif", io.BytesIO(gif_bytes(728, 90)), "image/gif")},
+        timeout=20,
+    )
+    assert good.status_code == 200
+    upload = good.json()
+    assert upload["image_url"].startswith("/media/ads/")
+
+    create = admin_session.post(
+        f"{API}/admin/ads",
+        json={
+            "category": "tech",
+            "image_url": upload["image_url"],
+            "hyperlink": "https://example.com/tech-ad",
+            "status": "active",
+        },
+        timeout=20,
+    )
+    assert create.status_code == 200
+    ad = create.json()
+    assert ad["hyperlink"] == "https://example.com/tech-ad"
+    assert ad["status"] == "active"
+
+    public_active = admin_session.get(f"{API}/ads/placement", params={"category": "tech"}, timeout=20)
+    assert public_active.status_code == 200
+    assert public_active.json()["is_dummy"] is False
+    assert public_active.json()["hyperlink"] == "https://example.com/tech-ad"
+
+    paused = admin_session.put(f"{API}/admin/ads/{ad['id']}", json={"status": "paused"}, timeout=20)
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+
+    public_paused = admin_session.get(f"{API}/ads/placement", params={"category": "tech"}, timeout=20)
+    assert public_paused.status_code == 200
+    assert public_paused.json()["is_dummy"] is True
+    assert public_paused.json()["hyperlink"] is None
+
+    deleted = admin_session.delete(f"{API}/admin/ads/{ad['id']}", timeout=20)
+    assert deleted.status_code == 200
+
+
+def test_ad_requires_hyperlink(admin_session):
+    r = admin_session.post(
+        f"{API}/admin/ads",
+        json={"category": "sports", "image_url": "/media/ads/example.gif", "hyperlink": "", "status": "active"},
+        timeout=20,
+    )
+    assert r.status_code == 422

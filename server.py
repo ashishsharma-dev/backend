@@ -9,13 +9,17 @@ import logging
 import uuid
 import bcrypt
 import jwt
+import re
+import struct
+from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query, UploadFile, File
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, HttpUrl
 
 from seed_data import get_seed_posts, CATEGORIES_META, slugify
 
@@ -26,8 +30,16 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-app = FastAPI(title="Global Trend Hub API")
+app = FastAPI(title="Githy API")
 api = APIRouter(prefix="/api")
+MEDIA_DIR = ROOT_DIR / "media"
+ADS_DIR = MEDIA_DIR / "ads"
+POST_COVERS_DIR = MEDIA_DIR / "post-covers"
+LEADERBOARD_WIDTH = 728
+LEADERBOARD_HEIGHT = 90
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+ADS_DIR.mkdir(parents=True, exist_ok=True)
+POST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------- Helpers ----------
 def env_flag(name: str, default: bool) -> bool:
@@ -111,6 +123,117 @@ def set_auth_cookies(response: Response, access: str, refresh: str):
     response.set_cookie("refresh_token", refresh, **refresh_cookie_settings())
 
 
+def get_image_dimensions(data: bytes) -> tuple[Optional[int], Optional[int]]:
+    if len(data) < 10:
+        return None, None
+
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        width, height = struct.unpack(">II", data[16:24])
+        return width, height
+
+    if data[:6] in {b"GIF87a", b"GIF89a"} and len(data) >= 10:
+        width, height = struct.unpack("<HH", data[6:10])
+        return width, height
+
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP" and len(data) >= 30:
+        if data[12:16] == b"VP8X":
+            width = 1 + int.from_bytes(data[24:27], "little")
+            height = 1 + int.from_bytes(data[27:30], "little")
+            return width, height
+        if data[12:16] == b"VP8 " and len(data) >= 30:
+            width, height = struct.unpack("<HH", data[26:30])
+            return width & 0x3FFF, height & 0x3FFF
+        if data[12:16] == b"VP8L" and len(data) >= 25:
+            bits = int.from_bytes(data[21:25], "little")
+            width = (bits & 0x3FFF) + 1
+            height = ((bits >> 14) & 0x3FFF) + 1
+            return width, height
+
+    if data.startswith(b"\xff\xd8"):
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            i += 2
+            if marker in {0xD8, 0xD9}:
+                continue
+            if i + 2 > len(data):
+                break
+            segment_length = struct.unpack(">H", data[i:i + 2])[0]
+            if segment_length < 2 or i + segment_length > len(data):
+                break
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                height, width = struct.unpack(">HH", data[i + 3:i + 7])
+                return width, height
+            i += segment_length
+
+    return None, None
+
+
+def detect_extension(data: bytes, content_type: str) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n") or content_type == "image/png":
+        return ".png"
+    if data[:6] in {b"GIF87a", b"GIF89a"} or content_type == "image/gif":
+        return ".gif"
+    if data.startswith(b"\xff\xd8") or content_type in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    if (data.startswith(b"RIFF") and data[8:12] == b"WEBP") or content_type == "image/webp":
+        return ".webp"
+    return ""
+
+
+def build_dummy_ad(category: Optional[str] = None) -> dict:
+    category_label = (category or "Sponsored").strip().title()
+    svg = f"""
+    <svg xmlns="http://www.w3.org/2000/svg" width="{LEADERBOARD_WIDTH}" height="{LEADERBOARD_HEIGHT}" viewBox="0 0 {LEADERBOARD_WIDTH} {LEADERBOARD_HEIGHT}">
+      <defs>
+        <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="#f7f1e6" />
+          <stop offset="100%" stop-color="#ece2d4" />
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#g)" rx="8" ry="8" />
+      <rect x="12" y="12" width="704" height="66" fill="none" stroke="#839788" stroke-width="1.5" stroke-dasharray="7 5" rx="6" ry="6" />
+      <text x="28" y="38" fill="#2f4f4f" font-size="15" font-family="Georgia, serif">Placeholder Advertisement</text>
+      <text x="28" y="61" fill="#5c6b6d" font-size="12" font-family="Arial, sans-serif">{category_label} placement is currently unavailable</text>
+    </svg>
+    """.strip()
+    return {
+        "id": "dummy-ad",
+        "category": category,
+        "image_url": f"data:image/svg+xml;utf8,{quote(re.sub(r'\\s+', ' ', svg))}",
+        "hyperlink": None,
+        "status": "paused",
+        "is_dummy": True,
+    }
+
+
+async def get_public_ad_for_category(category: Optional[str], request: Optional[Request] = None) -> dict:
+    if category:
+        latest_for_category = await db.ads.find_one(
+            {"category": category},
+            {"_id": 0},
+            sort=[("updated_at", -1), ("created_at", -1)],
+        )
+        if not latest_for_category:
+            return build_dummy_ad(category)
+        if latest_for_category.get("status") != "active":
+            return build_dummy_ad(category)
+        ad = latest_for_category
+    else:
+        ad = await db.ads.find_one({"status": "active"}, {"_id": 0}, sort=[("updated_at", -1), ("created_at", -1)])
+
+    if not ad:
+        return build_dummy_ad(category)
+
+    ad["is_dummy"] = False
+    if request and ad.get("image_url", "").startswith("/media/"):
+        ad["image_url"] = str(request.base_url).rstrip("/") + ad["image_url"]
+    return ad
+
+
 async def get_current_admin(request: Request) -> dict:
     token = request.cookies.get("access_token")
     if not token:
@@ -182,6 +305,20 @@ class ContactIn(BaseModel):
     message: str
 
 
+class AdIn(BaseModel):
+    category: str
+    image_url: str
+    hyperlink: HttpUrl
+    status: str = Field(pattern="^(active|paused)$")
+
+
+class AdUpdate(BaseModel):
+    category: Optional[str] = None
+    image_url: Optional[str] = None
+    hyperlink: Optional[HttpUrl] = None
+    status: Optional[str] = Field(default=None, pattern="^(active|paused)$")
+
+
 # ---------- Auth ----------
 @api.post("/auth/login")
 async def login(payload: LoginIn, response: Response):
@@ -239,6 +376,11 @@ async def list_categories():
     async for row in db.posts.aggregate(pipeline):
         counts[row["_id"]] = row["n"]
     return [{**c, "count": counts.get(c["slug"], 0)} for c in CATEGORIES_META]
+
+
+@api.get("/ads/placement")
+async def get_ad_placement(request: Request, category: Optional[str] = None):
+    return await get_public_ad_for_category(category, request)
 
 
 @api.get("/posts")
@@ -373,6 +515,20 @@ async def admin_create_post(payload: PostIn, _: dict = Depends(get_current_admin
     return doc
 
 
+@api.post("/admin/posts/upload-cover")
+async def admin_upload_post_cover(file: UploadFile = File(...), _: dict = Depends(get_current_admin)):
+    content = await file.read()
+    extension = detect_extension(content, file.content_type or "")
+    if not extension:
+        raise HTTPException(400, "Unsupported image format. Please upload PNG, JPG, GIF, or WebP.")
+
+    POST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{extension}"
+    target = POST_COVERS_DIR / filename
+    target.write_bytes(content)
+    return {"image_url": f"/media/post-covers/{filename}"}
+
+
 @api.put("/admin/posts/{post_id}")
 async def admin_update_post(post_id: str, payload: PostUpdate, _: dict = Depends(get_current_admin)):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
@@ -418,6 +574,68 @@ async def admin_contacts(_: dict = Depends(get_current_admin)):
     return await cursor.to_list(200)
 
 
+@api.get("/admin/ads")
+async def admin_list_ads(_: dict = Depends(get_current_admin)):
+    cursor = db.ads.find({}, {"_id": 0}).sort("updated_at", -1)
+    return await cursor.to_list(500)
+
+
+@api.post("/admin/ads/upload")
+async def admin_upload_ad_creative(file: UploadFile = File(...), _: dict = Depends(get_current_admin)):
+    content = await file.read()
+    width, height = get_image_dimensions(content)
+    if (width, height) != (LEADERBOARD_WIDTH, LEADERBOARD_HEIGHT):
+        raise HTTPException(400, f"Creative must be exactly {LEADERBOARD_WIDTH}x{LEADERBOARD_HEIGHT}px")
+
+    extension = detect_extension(content, file.content_type or "")
+    if not extension:
+        raise HTTPException(400, "Unsupported image format. Please upload PNG, JPG, GIF, or WebP.")
+
+    ADS_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{extension}"
+    target = ADS_DIR / filename
+    target.write_bytes(content)
+    return {"image_url": f"/media/ads/{filename}", "width": width, "height": height}
+
+
+@api.post("/admin/ads")
+async def admin_create_ad(payload: AdIn, _: dict = Depends(get_current_admin)):
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "category": payload.category,
+        "image_url": payload.image_url.strip(),
+        "hyperlink": str(payload.hyperlink).strip(),
+        "status": payload.status,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.ads.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/admin/ads/{ad_id}")
+async def admin_update_ad(ad_id: str, payload: AdUpdate, _: dict = Depends(get_current_admin)):
+    updates = {k: (str(v).strip() if k == "hyperlink" and v is not None else v) for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    result = await db.ads.update_one({"id": ad_id}, {"$set": updates})
+    if result.matched_count == 0:
+        raise HTTPException(404, "Ad not found")
+    ad = await db.ads.find_one({"id": ad_id}, {"_id": 0})
+    return ad
+
+
+@api.delete("/admin/ads/{ad_id}")
+async def admin_delete_ad(ad_id: str, _: dict = Depends(get_current_admin)):
+    result = await db.ads.delete_one({"id": ad_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Ad not found")
+    return {"ok": True}
+
+
 # ---------- Health ----------
 @api.get("/")
 async def root():
@@ -427,9 +645,14 @@ async def root():
 # ---------- Startup ----------
 @app.on_event("startup")
 async def startup():
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    ADS_DIR.mkdir(parents=True, exist_ok=True)
+    POST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
     await db.posts.create_index("slug", unique=True)
     await db.posts.create_index("category")
     await db.posts.create_index("published_at")
+    await db.ads.create_index("category")
+    await db.ads.create_index("status")
     await db.users.create_index("email", unique=True)
     await db.newsletter.create_index("email", unique=True)
     await db.comments.create_index("post_slug")
@@ -467,6 +690,7 @@ async def shutdown():
 
 
 app.include_router(api)
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 default_cors_origins = "http://localhost:3000,http://127.0.0.1:3000"
 cors_origins, allow_origin_regex = normalize_cors_origins(
     env_csv("CORS_ORIGINS", default_cors_origins)
