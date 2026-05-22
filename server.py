@@ -210,6 +210,28 @@ def build_dummy_ad(category: Optional[str] = None) -> dict:
     }
 
 
+def absolutize_media_url(url: str, request: Optional[Request] = None) -> str:
+    if not url:
+        return url
+    if url.startswith("http://") or url.startswith("https://") or url.startswith("data:"):
+        return url
+    if request and url.startswith("/"):
+        return str(request.base_url).rstrip("/") + url
+    return url
+
+
+def normalize_post_media(post: dict, request: Optional[Request] = None) -> dict:
+    if post.get("cover_image"):
+        post["cover_image"] = absolutize_media_url(post["cover_image"], request)
+    return post
+
+
+def normalize_ad_media(ad: dict, request: Optional[Request] = None) -> dict:
+    if ad.get("image_url"):
+        ad["image_url"] = absolutize_media_url(ad["image_url"], request)
+    return ad
+
+
 async def get_public_ad_for_category(category: Optional[str], request: Optional[Request] = None) -> dict:
     if category:
         latest_for_category = await db.ads.find_one(
@@ -229,9 +251,7 @@ async def get_public_ad_for_category(category: Optional[str], request: Optional[
         return build_dummy_ad(category)
 
     ad["is_dummy"] = False
-    if request and ad.get("image_url", "").startswith("/media/"):
-        ad["image_url"] = str(request.base_url).rstrip("/") + ad["image_url"]
-    return ad
+    return normalize_ad_media(ad, request)
 
 
 async def get_current_admin(request: Request) -> dict:
@@ -385,6 +405,7 @@ async def get_ad_placement(request: Request, category: Optional[str] = None):
 
 @api.get("/posts")
 async def list_posts(
+    request: Request,
     category: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(12, ge=1, le=60),
@@ -401,12 +422,13 @@ async def list_posts(
         ]
     cursor = db.posts.find(q, {"_id": 0, "content": 0}).sort("published_at", -1).skip(skip).limit(limit)
     items = await cursor.to_list(limit)
+    items = [normalize_post_media(item, request) for item in items]
     total = await db.posts.count_documents(q)
     return {"items": items, "total": total}
 
 
 @api.get("/posts/{slug}")
-async def get_post(slug: str):
+async def get_post(slug: str, request: Request):
     post = await db.posts.find_one({"slug": slug, "published": True}, {"_id": 0})
     if not post:
         raise HTTPException(404, "Post not found")
@@ -418,6 +440,8 @@ async def get_post(slug: str):
         {"_id": 0, "content": 0},
     ).sort("published_at", -1).limit(3)
     post["related"] = await related_cursor.to_list(3)
+    post = normalize_post_media(post, request)
+    post["related"] = [normalize_post_media(item, request) for item in post["related"]]
     return post
 
 
@@ -488,9 +512,10 @@ async def contact(payload: ContactIn):
 
 # ---------- Admin ----------
 @api.get("/admin/posts")
-async def admin_list_posts(_: dict = Depends(get_current_admin)):
+async def admin_list_posts(request: Request, _: dict = Depends(get_current_admin)):
     cursor = db.posts.find({}, {"_id": 0}).sort("published_at", -1)
-    return await cursor.to_list(500)
+    items = await cursor.to_list(500)
+    return [normalize_post_media(item, request) for item in items]
 
 
 @api.post("/admin/posts")
@@ -575,9 +600,10 @@ async def admin_contacts(_: dict = Depends(get_current_admin)):
 
 
 @api.get("/admin/ads")
-async def admin_list_ads(_: dict = Depends(get_current_admin)):
+async def admin_list_ads(request: Request, _: dict = Depends(get_current_admin)):
     cursor = db.ads.find({}, {"_id": 0}).sort("updated_at", -1)
-    return await cursor.to_list(500)
+    items = await cursor.to_list(500)
+    return [normalize_ad_media(item, request) for item in items]
 
 
 @api.post("/admin/ads/upload")
