@@ -4,7 +4,7 @@ import uuid
 
 # Image bank (Unsplash public hot-link friendly URLs by category)
 IMAGES = {
-    "travel": [
+    "travel-adventure": [
         "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?w=1600&q=80",
         "https://images.unsplash.com/photo-1488646953014-85cb44e25828?w=1600&q=80",
         "https://images.unsplash.com/photo-1501785888041-af3ef285b470?w=1600&q=80",
@@ -16,7 +16,7 @@ IMAGES = {
         "https://images.unsplash.com/photo-1503220317375-aaad61436b1b?w=1600&q=80",
         "https://images.unsplash.com/photo-1530789253388-582c481c54b0?w=1600&q=80",
     ],
-    "tech": [
+    "technology": [
         "https://images.unsplash.com/photo-1518770660439-4636190af475?w=1600&q=80",
         "https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=1600&q=80",
         "https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=1600&q=80",
@@ -64,7 +64,7 @@ IMAGES = {
         "https://images.unsplash.com/photo-1546519638-68e109498ffc?w=1600&q=80",
         "https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=1600&q=80",
     ],
-    "trading": [
+    "trading-investment": [
         "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=1600&q=80",
         "https://images.unsplash.com/photo-1642790106117-e829e14a795f?w=1600&q=80",
         "https://images.unsplash.com/photo-1640340434855-6084b1f4901c?w=1600&q=80",
@@ -79,7 +79,7 @@ IMAGES = {
 }
 
 POSTS_BY_CATEGORY = {
-    "travel": [
+    "travel-adventure": [
         ("10 Hidden Gems Across the American Southwest You Need to Visit", "From slot canyons in Arizona to sleepy desert towns in New Mexico, the American Southwest is filled with breathtaking destinations far from the usual tourist trail. We mapped a slow-paced route designed for deep exploration, peaceful nights under starlit skies, and the kind of stories that make great campfire conversation.", "Travis Worthington"),
         ("The Slow Travel Movement: Why Americans Are Ditching Itineraries", "A quiet revolution is reshaping how Americans experience the world. Slow travel isn't about ticking boxes—it's about staying long enough to understand a place. We spoke with full-time travelers who explain why fewer destinations and longer stays lead to richer memories.", "Maya Chen"),
         ("A Coastal Road Trip Through California's Highway 1, Reimagined", "Highway 1 has been written about countless times, yet most guides skip the off-ramp magic. We share the lavender farms, abalone bars, and tide-pool walks that make this iconic drive feel new—even if you've done it before.", "Travis Worthington"),
@@ -91,7 +91,7 @@ POSTS_BY_CATEGORY = {
         ("Pet-Friendly Travel: How We Mapped the Best US Dog-Welcoming Inns", "Traveling with dogs used to mean compromises. Today, more inns and Airbnbs are designed dog-first. Here's our curated list of properties where pets are guests, not afterthoughts.", "Travis Worthington"),
         ("The Quiet Magic of New England in Late Autumn", "Long after the leaf-peepers return home, New England enters a hushed second season. Empty trails, cheaper lodging, and the smell of woodsmoke create a meditative travel experience few outsiders see.", "Eleanor Park"),
     ],
-    "tech": [
+    "technology": [
         ("AI Tools Worth Paying For (And the Ones to Skip)", "After testing 47 AI tools across writing, design, and productivity, we narrowed down a shortlist of paid platforms that genuinely earn their subscription fee. We also call out the ones that look impressive in demos but fall apart in daily use.", "Devon Hayes"),
         ("The Quiet Death of Subscription Software (And What's Replacing It)", "Lifetime licenses are quietly returning, and a wave of indie developers are betting users want ownership again. We explore the macro trend reshaping the SaaS landscape and what it means for your monthly software bills.", "Priya Anand"),
         ("How to Set Up a Distraction-Free Home Office in Under $400", "A peaceful workspace doesn't require a designer salary. We walk through a calming, minimal home-office setup—desk, chair, lighting, sound—that supports deep work and feels good to return to every morning.", "Devon Hayes"),
@@ -139,7 +139,7 @@ POSTS_BY_CATEGORY = {
         ("Load Management in the NBA: Smart Strategy or Slow Fan Betrayal?", "Resting stars during the regular season protects bodies but bleeds fan trust. We dig into the data, the league's response, and what a fairer middle ground might look like for players, teams, and ticket-buyers.", "Grant Holloway"),
         ("American Tennis Is Quietly Back: The New Wave You Should Know", "For the first time in years, American tennis has a deep roster of young talent on both tours. We profile the players worth following and explain why the USTA's development pipeline is finally paying off.", "Jamie Calder"),
     ],
-    "trading": [
+    "trading-investment": [
         ("The Beginner's Guide to Calm, Long-Term Trading", "Day trading rarely makes anyone wealthy. A patient, weekly-review trading rhythm is far more likely to produce stable returns. We outline a practical onboarding plan for someone starting out.", "Riley McKenna"),
         ("Why Most Retail Traders Lose Money (And How to Avoid Their Mistakes)", "Industry data consistently shows the majority of retail traders losing money. We break down the structural and behavioral reasons—and outline the small habits that separate the winners.", "Theo Branigan"),
         ("Reading the Macro Tape Without the Anxiety", "Macro investing doesn't have to mean glued screens and constant cortisol. We share a calmer process for tracking the global economy that respects your time and your nerves.", "Riley McKenna"),
@@ -164,12 +164,12 @@ def slugify(s: str) -> str:
 def build_post_body(title: str, excerpt: str, category: str) -> str:
     """Generate rich HTML body content for a blog post."""
     section_titles = {
-        "travel": ["The Setting", "Why It Matters", "How To Get There", "What To Expect", "A Slow-Travel Itinerary", "Final Thoughts"],
-        "tech": ["The Backstory", "What We Tested", "Key Takeaways", "Real-World Performance", "Recommendations", "The Bottom Line"],
+        "travel-adventure": ["The Setting", "Why It Matters", "How To Get There", "What To Expect", "A Slow-Travel Itinerary", "Final Thoughts"],
+        "technology": ["The Backstory", "What We Tested", "Key Takeaways", "Real-World Performance", "Recommendations", "The Bottom Line"],
         "finance": ["The Big Picture", "Crunching The Numbers", "Common Mistakes", "A Practical Plan", "Risks To Watch", "Closing Thought"],
         "ecommerce": ["Why It Caught Our Attention", "How We Tested", "What Stood Out", "What Could Be Better", "Who It's For", "Final Verdict"],
         "sports": ["The Setting", "Why It Matters Now", "What The Data Says", "Who To Watch", "The Bigger Picture", "Final Whistle"],
-        "trading": ["The Core Idea", "How It Works In Practice", "Risk Management", "Real Examples", "Common Pitfalls", "Closing Thought"],
+        "trading-investment": ["The Core Idea", "How It Works In Practice", "Risk Management", "Real Examples", "Common Pitfalls", "Closing Thought"],
     }[category]
 
     paragraphs = [
@@ -213,7 +213,7 @@ def get_seed_posts():
                 "author": author,
                 "cover_image": cover,
                 "published": True,
-                "tags": [("Ecommerce" if category == "ecommerce" else category.title()), "editorial", "long-read"],
+                "tags": [({"ecommerce": "Ecommerce", "travel-adventure": "Travel & Adventure", "technology": "Technology"}.get(category, category.title())), "editorial", "long-read"],
                 "published_at": published.isoformat(),
                 "created_at": published.isoformat(),
                 "updated_at": published.isoformat(),
@@ -226,10 +226,10 @@ def get_seed_posts():
 
 
 CATEGORIES_META = [
-    {"slug": "travel", "name": "Travel", "tagline": "Slow journeys across America and beyond.", "color": "#839788"},
-    {"slug": "tech", "name": "Tech", "tagline": "Calm tools for a noisy world.", "color": "#5C6B6D"},
+    {"slug": "travel-adventure", "name": "Travel & Adventure", "tagline": "Slow journeys across America and beyond.", "color": "#839788"},
+    {"slug": "technology", "name": "Technology", "tagline": "Calm tools for a noisy world.", "color": "#5C6B6D"},
     {"slug": "finance", "name": "Finance", "tagline": "Patient money for thoughtful lives.", "color": "#C6A28A"},
     {"slug": "ecommerce", "name": "Ecommerce", "tagline": "Considered things, tested honestly.", "color": "#9C8B7A"},
     {"slug": "sports", "name": "Sports", "tagline": "Calm takes on the games we love.", "color": "#6E8B7E"},
-    {"slug": "trading", "name": "Trading", "tagline": "Markets explored with discipline.", "color": "#A48A6E"},
+    {"slug": "trading-investment", "name": "Trading & Investment", "tagline": "Markets explored with discipline.", "color": "#A48A6E"},
 ]

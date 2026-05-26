@@ -56,6 +56,8 @@ def test_categories(session):
     data = r.json()
     assert len(data) == 6
     assert any(c["slug"] == "ecommerce" for c in data)
+    assert any(c["slug"] == "travel-adventure" for c in data)
+    assert any(c["slug"] == "technology" for c in data)
     for c in data:
         assert "slug" in c and "count" in c
 
@@ -80,11 +82,11 @@ def test_posts_default_limit(session):
 
 
 def test_posts_filter_category(session):
-    r = session.get(f"{API}/posts", params={"category": "tech", "limit": 20}, timeout=20)
+    r = session.get(f"{API}/posts", params={"category": "technology", "limit": 20}, timeout=20)
     assert r.status_code == 200
     data = r.json()
     assert data["total"] == 10
-    assert all(p["category"] == "tech" for p in data["items"])
+    assert all(p["category"] == "technology" for p in data["items"])
 
 
 def test_posts_filter_ecommerce_category(session):
@@ -236,9 +238,9 @@ def test_admin_routes_unauth(session):
     for path in ["/admin/posts", "/admin/stats", "/admin/ads"]:
         r = session.get(f"{API}{path}", timeout=20)
         assert r.status_code == 401, f"{path} should be 401"
-    r = session.post(f"{API}/admin/posts", json={"title": "x", "excerpt": "x", "content": "x", "category": "tech"}, timeout=20)
+    r = session.post(f"{API}/admin/posts", json={"title": "x", "excerpt": "x", "content": "x", "category": "technology"}, timeout=20)
     assert r.status_code == 401
-    r2 = session.post(f"{API}/admin/ads", json={"category": "tech", "image_url": "/media/ads/x.gif", "hyperlink": "https://example.com", "status": "active"}, timeout=20)
+    r2 = session.post(f"{API}/admin/ads", json={"category": "technology", "image_url": "/media/ads/x.gif", "hyperlink": "https://example.com", "status": "active"}, timeout=20)
     assert r2.status_code == 401
 
 
@@ -254,7 +256,7 @@ def test_admin_stats(admin_session):
 def test_admin_crud(admin_session):
     title = f"TEST_Post_{uuid.uuid4().hex[:6]}"
     payload = {"title": title, "excerpt": "exc", "content": "hello " * 50,
-               "category": "tech", "tags": ["t"], "published": True}
+               "category": "technology", "tags": ["t"], "published": True}
     r = admin_session.post(f"{API}/admin/posts", json=payload, timeout=20)
     assert r.status_code == 200
     post = r.json()
@@ -300,7 +302,7 @@ def test_ad_upload_validation_and_crud(admin_session):
     create = admin_session.post(
         f"{API}/admin/ads",
         json={
-            "category": "tech",
+            "category": "technology",
             "image_url": upload["image_url"],
             "hyperlink": "https://example.com/tech-ad",
             "status": "active",
@@ -312,7 +314,7 @@ def test_ad_upload_validation_and_crud(admin_session):
     assert ad["hyperlink"] == "https://example.com/tech-ad"
     assert ad["status"] == "active"
 
-    public_active = admin_session.get(f"{API}/ads/placement", params={"category": "tech"}, timeout=20)
+    public_active = admin_session.get(f"{API}/ads/placement", params={"category": "technology"}, timeout=20)
     assert public_active.status_code == 200
     assert public_active.json()["is_dummy"] is False
     assert public_active.json()["hyperlink"] == "https://example.com/tech-ad"
@@ -321,13 +323,51 @@ def test_ad_upload_validation_and_crud(admin_session):
     assert paused.status_code == 200
     assert paused.json()["status"] == "paused"
 
-    public_paused = admin_session.get(f"{API}/ads/placement", params={"category": "tech"}, timeout=20)
+    public_paused = admin_session.get(f"{API}/ads/placement", params={"category": "technology"}, timeout=20)
     assert public_paused.status_code == 200
     assert public_paused.json()["is_dummy"] is True
     assert public_paused.json()["hyperlink"] is None
 
     deleted = admin_session.delete(f"{API}/admin/ads/{ad['id']}", timeout=20)
     assert deleted.status_code == 200
+
+
+def test_public_ad_ignores_newer_paused_creative(admin_session):
+    first = admin_session.post(
+        f"{API}/admin/ads",
+        json={
+            "category": "travel-adventure",
+            "image_url": "https://example.com/active-ad.png",
+            "hyperlink": "https://example.com/active",
+            "status": "active",
+        },
+        timeout=20,
+    )
+    assert first.status_code == 200
+    active_ad = first.json()
+
+    second = admin_session.post(
+        f"{API}/admin/ads",
+        json={
+            "category": "travel-adventure",
+            "image_url": "https://example.com/paused-ad.png",
+            "hyperlink": "https://example.com/paused",
+            "status": "paused",
+        },
+        timeout=20,
+    )
+    assert second.status_code == 200
+    paused_ad = second.json()
+
+    public_ad = admin_session.get(f"{API}/ads/placement", params={"category": "travel-adventure"}, timeout=20)
+    assert public_ad.status_code == 200
+    payload = public_ad.json()
+    assert payload["is_dummy"] is False
+    assert payload["image_url"] == "https://example.com/active-ad.png"
+    assert payload["hyperlink"] == "https://example.com/active"
+
+    assert admin_session.delete(f"{API}/admin/ads/{active_ad['id']}", timeout=20).status_code == 200
+    assert admin_session.delete(f"{API}/admin/ads/{paused_ad['id']}", timeout=20).status_code == 200
 
 
 def test_ad_requires_hyperlink(admin_session):

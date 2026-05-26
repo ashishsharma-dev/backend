@@ -240,19 +240,25 @@ def canonical_category_slug(category: Optional[str]) -> Optional[str]:
     if category is None:
         return None
     key = str(category).strip().lower()
+    if key == "travel":
+        return "travel-adventure"
+    if key == "tech":
+        return "technology"
     if key == "products":
         return "ecommerce"
+    if key == "trading":
+        return "trading-investment"
     return key
 
 
 def display_category_label(category: Optional[str]) -> str:
     labels = {
-        "travel": "Travel",
-        "tech": "Tech",
+        "travel-adventure": "Travel & Adventure",
+        "technology": "Technology",
         "finance": "Finance",
         "ecommerce": "Ecommerce",
         "sports": "Sports",
-        "trading": "Trading & Investment",
+        "trading-investment": "Trading & Investment",
     }
     key = canonical_category_slug(category) or ""
     return labels.get(key, category or "")
@@ -354,20 +360,23 @@ def normalize_ad_media(ad: dict, request: Optional[Request] = None) -> dict:
 async def get_public_ad_for_category(category: Optional[str], request: Optional[Request] = None) -> dict:
     category = canonical_category_slug(category)
     if category:
-        latest_for_category = await db.ads.find_one(
-            {"category": category},
+        ad = await db.ads.find_one(
+            {
+                "category": category,
+                "status": "active",
+                "image_url": {"$nin": ["", None]},
+            },
             {"_id": 0},
             sort=[("updated_at", -1), ("created_at", -1)],
         )
-        if not latest_for_category:
+        if not ad:
             return build_dummy_ad(category)
-        if latest_for_category.get("status") != "active":
-            return build_dummy_ad(category)
-        if not latest_for_category.get("image_url"):
-            return build_dummy_ad(category)
-        ad = latest_for_category
     else:
-        ad = await db.ads.find_one({"status": "active"}, {"_id": 0}, sort=[("updated_at", -1), ("created_at", -1)])
+        ad = await db.ads.find_one(
+            {"status": "active", "image_url": {"$nin": ["", None]}},
+            {"_id": 0},
+            sort=[("updated_at", -1), ("created_at", -1)],
+        )
 
     if not ad:
         return build_dummy_ad(category)
@@ -892,6 +901,12 @@ async def startup():
     await db.media_assets.create_index([("kind", 1), ("filename", 1)], unique=True)
     await db.posts.update_many({"category": "products"}, {"$set": {"category": "ecommerce"}})
     await db.ads.update_many({"category": "products"}, {"$set": {"category": "ecommerce"}})
+    await db.posts.update_many({"category": "travel"}, {"$set": {"category": "travel-adventure"}})
+    await db.ads.update_many({"category": "travel"}, {"$set": {"category": "travel-adventure"}})
+    await db.posts.update_many({"category": "tech"}, {"$set": {"category": "technology"}})
+    await db.ads.update_many({"category": "tech"}, {"$set": {"category": "technology"}})
+    await db.posts.update_many({"category": "trading"}, {"$set": {"category": "trading-investment"}})
+    await db.ads.update_many({"category": "trading"}, {"$set": {"category": "trading-investment"}})
     for file_path in ADS_DIR.iterdir():
         if not file_path.is_file():
             continue
