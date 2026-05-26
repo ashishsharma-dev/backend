@@ -37,6 +37,7 @@ ADS_DIR = MEDIA_DIR / "ads"
 POST_COVERS_DIR = MEDIA_DIR / "post-covers"
 LEADERBOARD_WIDTH = 728
 LEADERBOARD_HEIGHT = 90
+REACTION_COOKIE_NAME = "reaction_user_id"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 ADS_DIR.mkdir(parents=True, exist_ok=True)
 POST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -184,6 +185,64 @@ def detect_extension(data: bytes, content_type: str) -> str:
     return ""
 
 
+def canonical_category_slug(category: Optional[str]) -> Optional[str]:
+    if category is None:
+        return None
+    key = str(category).strip().lower()
+    if key == "products":
+        return "ecommerce"
+    return key
+
+
+def display_category_label(category: Optional[str]) -> str:
+    labels = {
+        "travel": "Travel",
+        "tech": "Tech",
+        "finance": "Finance",
+        "ecommerce": "Ecommerce",
+        "sports": "Sports",
+        "trading": "Trading & Investment",
+    }
+    key = canonical_category_slug(category) or ""
+    return labels.get(key, category or "")
+
+
+def normalize_post_tags(category: Optional[str], tags: Optional[List[str]]) -> List[str]:
+    cleaned = []
+    seen = set()
+    category_slug = canonical_category_slug(category) or ""
+    category_label = display_category_label(category_slug)
+    aliases = {
+        category_slug,
+        category_label.strip().lower(),
+        category_label.replace("&", "and").strip().lower(),
+        "products" if category_slug == "ecommerce" else "",
+        "product" if category_slug == "ecommerce" else "",
+        "e-commerce" if category_slug == "ecommerce" else "",
+        "ecommerce" if category_slug == "ecommerce" else "",
+    }
+    aliases.discard("")
+    normalized_source = tags or []
+
+    if category_label:
+        cleaned.append(category_label)
+        seen.add(category_label.lower())
+
+    for tag in normalized_source:
+        value = str(tag).strip()
+        if not value:
+            continue
+        lower = value.lower()
+        if lower in aliases:
+            continue
+        if lower in seen:
+            continue
+        cleaned.append(value)
+        seen.add(lower)
+
+    return cleaned
+
+
 def build_dummy_ad(category: Optional[str] = None) -> dict:
     category_label = (category or "Sponsored").strip().title()
     svg = f"""
@@ -221,18 +280,25 @@ def absolutize_media_url(url: str, request: Optional[Request] = None) -> str:
 
 
 def normalize_post_media(post: dict, request: Optional[Request] = None) -> dict:
+    if post.get("category"):
+        post["category"] = canonical_category_slug(post["category"])
     if post.get("cover_image"):
         post["cover_image"] = absolutize_media_url(post["cover_image"], request)
+    post["tags"] = normalize_post_tags(post.get("category"), post.get("tags"))
     return post
 
 
 def normalize_ad_media(ad: dict, request: Optional[Request] = None) -> dict:
-    if ad.get("image_url"):
-        ad["image_url"] = absolutize_media_url(ad["image_url"], request)
+    if ad.get("category"):
+        ad["category"] = canonical_category_slug(ad["category"])
+    if not ad.get("image_url"):
+        return build_dummy_ad(ad.get("category"))
+    ad["image_url"] = absolutize_media_url(ad["image_url"], request)
     return ad
 
 
 async def get_public_ad_for_category(category: Optional[str], request: Optional[Request] = None) -> dict:
+    category = canonical_category_slug(category)
     if category:
         latest_for_category = await db.ads.find_one(
             {"category": category},
@@ -242,6 +308,8 @@ async def get_public_ad_for_category(category: Optional[str], request: Optional[
         if not latest_for_category:
             return build_dummy_ad(category)
         if latest_for_category.get("status") != "active":
+            return build_dummy_ad(category)
+        if not latest_for_category.get("image_url"):
             return build_dummy_ad(category)
         ad = latest_for_category
     else:
@@ -414,7 +482,7 @@ async def list_posts(
 ):
     q: Dict = {"published": True}
     if category:
-        q["category"] = category
+        q["category"] = canonical_category_slug(category)
     if search:
         q["$or"] = [
             {"title": {"$regex": search, "$options": "i"}},
@@ -442,6 +510,13 @@ async def get_post(slug: str, request: Request):
     post["related"] = await related_cursor.to_list(3)
     post = normalize_post_media(post, request)
     post["related"] = [normalize_post_media(item, request) for item in post["related"]]
+    reaction_user_id = request.cookies.get(REACTION_COOKIE_NAME)
+    post["viewer_has_reacted"] = bool(
+        reaction_user_id and await db.post_reactions.find_one(
+            {"post_slug": slug, "reaction_user_id": reaction_user_id},
+            {"_id": 0, "id": 1},
+        )
+    )
     return post
 
 
@@ -474,12 +549,35 @@ async def list_comments(slug: str):
 
 
 @api.post("/posts/{slug}/react")
-async def react(slug: str, payload: ReactionIn):
+async def react(slug: str, payload: ReactionIn, request: Request, response: Response):
     post = await db.posts.find_one({"slug": slug}, {"_id": 0})
     if not post:
         raise HTTPException(404, "Post not found")
+    reaction_user_id = request.cookies.get(REACTION_COOKIE_NAME) or str(uuid.uuid4())
+    existing_reaction = await db.post_reactions.find_one(
+        {"post_slug": slug, "reaction_user_id": reaction_user_id},
+        {"_id": 0, "id": 1},
+    )
+    if existing_reaction:
+        raise HTTPException(409, "You have already reacted to this article.")
     field = f"reactions.{payload.type}"
     await db.posts.update_one({"slug": slug}, {"$inc": {field: 1}})
+    await db.post_reactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "post_slug": slug,
+        "reaction_user_id": reaction_user_id,
+        "type": payload.type,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    response.set_cookie(
+        REACTION_COOKIE_NAME,
+        reaction_user_id,
+        httponly=True,
+        secure=env_flag("COOKIE_SECURE", False),
+        samesite="lax",
+        max_age=31536000,
+        path="/",
+    )
     updated = await db.posts.find_one({"slug": slug}, {"_id": 0, "reactions": 1})
     return updated.get("reactions", {})
 
@@ -488,13 +586,13 @@ async def react(slug: str, payload: ReactionIn):
 async def newsletter(payload: NewsletterIn):
     existing = await db.newsletter.find_one({"email": payload.email.lower()})
     if existing:
-        return {"ok": True, "message": "Already subscribed"}
+        return {"ok": True, "message": "Successfully subscribed! Welcome aboard."}
     await db.newsletter.insert_one({
         "id": str(uuid.uuid4()),
         "email": payload.email.lower(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    return {"ok": True, "message": "Subscribed"}
+    return {"ok": True, "message": "Successfully subscribed! Welcome aboard."}
 
 
 @api.post("/contact")
@@ -524,10 +622,13 @@ async def admin_create_post(payload: PostIn, _: dict = Depends(get_current_admin
     slug = slugify(payload.title)
     if await db.posts.find_one({"slug": slug}):
         slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+    category = canonical_category_slug(payload.category)
     doc = {
         "id": str(uuid.uuid4()),
         "slug": slug,
         **payload.model_dump(),
+        "category": category,
+        "tags": normalize_post_tags(category, payload.tags),
         "published_at": now,
         "created_at": now,
         "updated_at": now,
@@ -559,6 +660,17 @@ async def admin_update_post(post_id: str, payload: PostUpdate, _: dict = Depends
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "No fields to update")
+    if "category" in updates:
+        updates["category"] = canonical_category_slug(updates["category"])
+    category = updates.get("category")
+    if category is None:
+        existing_post = await db.posts.find_one({"id": post_id}, {"_id": 0, "category": 1, "tags": 1})
+        if not existing_post:
+            raise HTTPException(404, "Post not found")
+        category = existing_post.get("category")
+        if "tags" not in updates:
+            updates["tags"] = existing_post.get("tags", [])
+    updates["tags"] = normalize_post_tags(category, updates.get("tags"))
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = await db.posts.update_one({"id": post_id}, {"$set": updates})
     if result.matched_count == 0:
@@ -629,7 +741,7 @@ async def admin_create_ad(payload: AdIn, _: dict = Depends(get_current_admin)):
     now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": str(uuid.uuid4()),
-        "category": payload.category,
+        "category": canonical_category_slug(payload.category),
         "image_url": payload.image_url.strip(),
         "hyperlink": str(payload.hyperlink).strip(),
         "status": payload.status,
@@ -646,6 +758,8 @@ async def admin_update_ad(ad_id: str, payload: AdUpdate, _: dict = Depends(get_c
     updates = {k: (str(v).strip() if k == "hyperlink" and v is not None else v) for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "No fields to update")
+    if "category" in updates:
+        updates["category"] = canonical_category_slug(updates["category"])
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = await db.ads.update_one({"id": ad_id}, {"$set": updates})
     if result.matched_count == 0:
@@ -682,6 +796,9 @@ async def startup():
     await db.users.create_index("email", unique=True)
     await db.newsletter.create_index("email", unique=True)
     await db.comments.create_index("post_slug")
+    await db.post_reactions.create_index([("post_slug", 1), ("reaction_user_id", 1)], unique=True)
+    await db.posts.update_many({"category": "products"}, {"$set": {"category": "ecommerce"}})
+    await db.ads.update_many({"category": "products"}, {"$set": {"category": "ecommerce"}})
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()

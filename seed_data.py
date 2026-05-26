@@ -40,7 +40,7 @@ IMAGES = {
         "https://images.unsplash.com/photo-1633158829585-23ba8f7c8caf?w=1600&q=80",
         "https://images.unsplash.com/photo-1580519542036-c47de6196ba5?w=1600&q=80",
     ],
-    "products": [
+    "ecommerce": [
         "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=1600&q=80",
         "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=1600&q=80",
         "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=1600&q=80",
@@ -115,7 +115,7 @@ POSTS_BY_CATEGORY = {
         ("A Simple Three-Bucket Budget That Survives Real Life", "Rigid budgets break the moment life happens. The three-bucket system—needs, wants, future—is forgiving, intuitive, and designed to last decades.", "Hannah Reyes"),
         ("Side Income Streams That Don't Require You to Become an Influencer", "Not every side hustle has to involve a camera. We cataloged 14 proven income streams from freelancing to renting out unused space, all of which respect your privacy and your time.", "Marcus Boyle"),
     ],
-    "products": [
+    "ecommerce": [
         ("The 12 Most Calming Home Products We've Tested", "From weighted blankets to ceramic lamps, certain products quietly elevate the feel of a home. We tested dozens to find the ones that deliver real serenity rather than aesthetic posturing.", "Sienna Carmichael"),
         ("Sleep Headphones Worth Buying (And the Comfortable Ones to Skip)", "Bluetooth headbands have become a sleep essential, but build quality varies wildly. We tested 18 models for comfort, sound, and battery to find the genuinely peaceful options.", "Aiden Kowalski"),
         ("The Standing Desk Buyer's Guide for Small Apartments", "Most standing desk reviews assume you have a corner office. We focused on quiet motors, slim footprints, and minimalist designs that fit thoughtfully into smaller homes.", "Sienna Carmichael"),
@@ -167,7 +167,7 @@ def build_post_body(title: str, excerpt: str, category: str) -> str:
         "travel": ["The Setting", "Why It Matters", "How To Get There", "What To Expect", "A Slow-Travel Itinerary", "Final Thoughts"],
         "tech": ["The Backstory", "What We Tested", "Key Takeaways", "Real-World Performance", "Recommendations", "The Bottom Line"],
         "finance": ["The Big Picture", "Crunching The Numbers", "Common Mistakes", "A Practical Plan", "Risks To Watch", "Closing Thought"],
-        "products": ["Why It Caught Our Attention", "How We Tested", "What Stood Out", "What Could Be Better", "Who It's For", "Final Verdict"],
+        "ecommerce": ["Why It Caught Our Attention", "How We Tested", "What Stood Out", "What Could Be Better", "Who It's For", "Final Verdict"],
         "sports": ["The Setting", "Why It Matters Now", "What The Data Says", "Who To Watch", "The Bigger Picture", "Final Whistle"],
         "trading": ["The Core Idea", "How It Works In Practice", "Risk Management", "Real Examples", "Common Pitfalls", "Closing Thought"],
     }[category]
@@ -213,7 +213,7 @@ def get_seed_posts():
                 "author": author,
                 "cover_image": cover,
                 "published": True,
-                "tags": [category, "editorial", "long-read"],
+                "tags": [("Ecommerce" if category == "ecommerce" else category.title()), "editorial", "long-read"],
                 "published_at": published.isoformat(),
                 "created_at": published.isoformat(),
                 "updated_at": published.isoformat(),
@@ -229,7 +229,7 @@ CATEGORIES_META = [
     {"slug": "travel", "name": "Travel", "tagline": "Slow journeys across America and beyond.", "color": "#839788"},
     {"slug": "tech", "name": "Tech", "tagline": "Calm tools for a noisy world.", "color": "#5C6B6D"},
     {"slug": "finance", "name": "Finance", "tagline": "Patient money for thoughtful lives.", "color": "#C6A28A"},
-    {"slug": "products", "name": "Products", "tagline": "Considered things, tested honestly.", "color": "#9C8B7A"},
+    {"slug": "ecommerce", "name": "Ecommerce", "tagline": "Considered things, tested honestly.", "color": "#9C8B7A"},
     {"slug": "sports", "name": "Sports", "tagline": "Calm takes on the games we love.", "color": "#6E8B7E"},
     {"slug": "trading", "name": "Trading", "tagline": "Markets explored with discipline.", "color": "#A48A6E"},
 ]

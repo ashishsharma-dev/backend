@@ -55,6 +55,7 @@ def test_categories(session):
     assert r.status_code == 200
     data = r.json()
     assert len(data) == 6
+    assert any(c["slug"] == "ecommerce" for c in data)
     for c in data:
         assert "slug" in c and "count" in c
 
@@ -84,6 +85,14 @@ def test_posts_filter_category(session):
     data = r.json()
     assert data["total"] == 10
     assert all(p["category"] == "tech" for p in data["items"])
+
+
+def test_posts_filter_ecommerce_category(session):
+    r = session.get(f"{API}/posts", params={"category": "ecommerce", "limit": 20}, timeout=20)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 10
+    assert all(p["category"] == "ecommerce" for p in data["items"])
 
 
 def test_posts_search(session):
@@ -136,9 +145,10 @@ def test_comment_too_short(session, sample_slug):
 
 # ---- Reactions ----
 def test_reaction_increments(session, sample_slug):
-    r0 = session.get(f"{API}/posts/{sample_slug}", timeout=20)
+    reaction_session = requests.Session()
+    r0 = reaction_session.get(f"{API}/posts/{sample_slug}", timeout=20)
     before = r0.json().get("reactions", {}).get("like", 0)
-    r = session.post(f"{API}/posts/{sample_slug}/react", json={"type": "like"}, timeout=20)
+    r = reaction_session.post(f"{API}/posts/{sample_slug}/react", json={"type": "like"}, timeout=20)
     assert r.status_code == 200
     assert r.json().get("like", 0) == before + 1
 
@@ -148,13 +158,24 @@ def test_reaction_invalid(session, sample_slug):
     assert r.status_code == 422
 
 
+def test_reaction_is_limited_to_one_per_user(sample_slug):
+    reaction_session = requests.Session()
+    first = reaction_session.post(f"{API}/posts/{sample_slug}/react", json={"type": "love"}, timeout=20)
+    assert first.status_code == 200
+    second = reaction_session.post(f"{API}/posts/{sample_slug}/react", json={"type": "insightful"}, timeout=20)
+    assert second.status_code == 409
+    assert "already reacted" in second.json()["detail"].lower()
+
+
 # ---- Newsletter / Contact ----
 def test_newsletter_and_dedupe(session):
     email = f"TEST_{uuid.uuid4().hex[:8]}@example.com"
     r1 = session.post(f"{API}/newsletter", json={"email": email}, timeout=20)
-    assert r1.status_code == 200 and "Subscribed" in r1.json()["message"]
+    assert r1.status_code == 200
+    assert r1.json()["message"] == "Successfully subscribed! Welcome aboard."
     r2 = session.post(f"{API}/newsletter", json={"email": email}, timeout=20)
-    assert r2.status_code == 200 and "Already" in r2.json()["message"]
+    assert r2.status_code == 200
+    assert r2.json()["message"] == "Successfully subscribed! Welcome aboard."
 
 
 def test_contact(session):
