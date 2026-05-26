@@ -185,6 +185,20 @@ def detect_extension(data: bytes, content_type: str) -> str:
     return ""
 
 
+def media_content_type(extension: str) -> str:
+    return {
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(extension.lower(), "application/octet-stream")
+
+
+def ad_asset_api_path(filename: str) -> str:
+    return f"/api/media/ads/{filename}"
+
+
 def canonical_category_slug(category: Optional[str]) -> Optional[str]:
     if category is None:
         return None
@@ -293,6 +307,9 @@ def normalize_ad_media(ad: dict, request: Optional[Request] = None) -> dict:
         ad["category"] = canonical_category_slug(ad["category"])
     if not ad.get("image_url"):
         return build_dummy_ad(ad.get("category"))
+    if ad["image_url"].startswith("/media/ads/"):
+        filename = ad["image_url"].rsplit("/", 1)[-1]
+        ad["image_url"] = ad_asset_api_path(filename)
     ad["image_url"] = absolutize_media_url(ad["image_url"], request)
     return ad
 
@@ -469,6 +486,20 @@ async def list_categories():
 @api.get("/ads/placement")
 async def get_ad_placement(request: Request, category: Optional[str] = None):
     return await get_public_ad_for_category(category, request)
+
+
+@api.get("/media/ads/{filename}")
+async def get_uploaded_ad_asset(filename: str):
+    asset = await db.media_assets.find_one({"kind": "ad", "filename": filename}, {"_id": 0})
+    if asset and asset.get("content"):
+        return Response(content=asset["content"], media_type=asset.get("content_type", "application/octet-stream"))
+
+    file_path = ADS_DIR / filename
+    if file_path.exists():
+        extension = file_path.suffix or ".bin"
+        return Response(content=file_path.read_bytes(), media_type=media_content_type(extension))
+
+    raise HTTPException(404, "Ad image not found")
 
 
 @api.get("/posts")
@@ -733,7 +764,24 @@ async def admin_upload_ad_creative(file: UploadFile = File(...), _: dict = Depen
     filename = f"{uuid.uuid4().hex}{extension}"
     target = ADS_DIR / filename
     target.write_bytes(content)
-    return {"image_url": f"/media/ads/{filename}", "width": width, "height": height}
+    await db.media_assets.update_one(
+        {"kind": "ad", "filename": filename},
+        {
+            "$set": {
+                "kind": "ad",
+                "filename": filename,
+                "content": content,
+                "content_type": media_content_type(extension),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        },
+        upsert=True,
+    )
+    return {"image_url": ad_asset_api_path(filename), "width": width, "height": height}
 
 
 @api.post("/admin/ads")
@@ -797,8 +845,30 @@ async def startup():
     await db.newsletter.create_index("email", unique=True)
     await db.comments.create_index("post_slug")
     await db.post_reactions.create_index([("post_slug", 1), ("reaction_user_id", 1)], unique=True)
+    await db.media_assets.create_index([("kind", 1), ("filename", 1)], unique=True)
     await db.posts.update_many({"category": "products"}, {"$set": {"category": "ecommerce"}})
     await db.ads.update_many({"category": "products"}, {"$set": {"category": "ecommerce"}})
+    for file_path in ADS_DIR.iterdir():
+        if not file_path.is_file():
+            continue
+        content = file_path.read_bytes()
+        await db.media_assets.update_one(
+            {"kind": "ad", "filename": file_path.name},
+            {
+                "$set": {
+                    "kind": "ad",
+                    "filename": file_path.name,
+                    "content": content,
+                    "content_type": media_content_type(file_path.suffix or ".bin"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                "$setOnInsert": {
+                    "id": str(uuid.uuid4()),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            },
+            upsert=True,
+        )
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()

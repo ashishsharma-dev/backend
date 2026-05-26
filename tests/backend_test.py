@@ -291,7 +291,11 @@ def test_ad_upload_validation_and_crud(admin_session):
     )
     assert good.status_code == 200
     upload = good.json()
-    assert upload["image_url"].startswith("/media/ads/")
+    assert upload["image_url"].startswith("/api/media/ads/")
+
+    asset = admin_session.get(f"{BASE_URL}{upload['image_url']}", timeout=20)
+    assert asset.status_code == 200
+    assert asset.headers["content-type"].startswith("image/")
 
     create = admin_session.post(
         f"{API}/admin/ads",
