@@ -11,7 +11,10 @@ import bcrypt
 import jwt
 import re
 import struct
-from urllib.parse import quote
+import base64
+import json
+from urllib.parse import quote, urlencode
+from urllib.request import Request as UrlRequest, urlopen
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 
@@ -53,6 +56,10 @@ def env_flag(name: str, default: bool) -> bool:
 def env_csv(name: str, default: str = "") -> List[str]:
     raw = os.environ.get(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def env_str(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
 
 
 def normalize_cors_origins(origins: List[str]) -> tuple[List[str], Optional[str]]:
@@ -197,6 +204,36 @@ def media_content_type(extension: str) -> str:
 
 def ad_asset_api_path(filename: str) -> str:
     return f"/api/media/ads/{filename}"
+
+
+def upload_ad_to_imgbb(content: bytes, extension: str) -> str:
+    api_key = env_str("IMGBB_API_KEY")
+    if not api_key:
+        raise RuntimeError("IMGBB_API_KEY is not configured")
+
+    payload = {
+        "key": api_key,
+        "image": base64.b64encode(content).decode("ascii"),
+        "name": f"githy-ad-{uuid.uuid4().hex}{extension}",
+    }
+    expiration = env_str("IMGBB_EXPIRATION")
+    if expiration:
+        payload["expiration"] = expiration
+
+    request = UrlRequest(
+        "https://api.imgbb.com/1/upload",
+        data=urlencode(payload).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+
+    with urlopen(request, timeout=30) as response:
+        body = json.loads(response.read().decode("utf-8"))
+
+    if not body.get("success") or not body.get("data", {}).get("url"):
+        raise RuntimeError("Image host did not return a valid URL")
+
+    return body["data"]["url"]
 
 
 def canonical_category_slug(category: Optional[str]) -> Optional[str]:
@@ -759,6 +796,13 @@ async def admin_upload_ad_creative(file: UploadFile = File(...), _: dict = Depen
     extension = detect_extension(content, file.content_type or "")
     if not extension:
         raise HTTPException(400, "Unsupported image format. Please upload PNG, JPG, GIF, or WebP.")
+
+    if env_str("IMGBB_API_KEY"):
+        try:
+            hosted_url = upload_ad_to_imgbb(content, extension)
+            return {"image_url": hosted_url, "width": width, "height": height}
+        except Exception as exc:
+            logging.exception("Failed to upload ad creative to imgbb; falling back to internal storage")
 
     ADS_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex}{extension}"
