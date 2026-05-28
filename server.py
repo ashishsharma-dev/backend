@@ -203,7 +203,7 @@ def media_content_type(extension: str) -> str:
 
 
 def ad_asset_api_path(filename: str) -> str:
-    return f"/api/media/ads/{filename}"
+    return f"/api/media/banners/{filename}"
 
 
 def upload_ad_to_imgbb(content: bytes, extension: str) -> str:
@@ -350,7 +350,7 @@ def normalize_ad_media(ad: dict, request: Optional[Request] = None) -> dict:
         ad["category"] = canonical_category_slug(ad["category"])
     if not ad.get("image_url"):
         return build_dummy_ad(ad.get("category"))
-    if ad["image_url"].startswith("/media/ads/"):
+    if ad["image_url"].startswith("/media/ads/") or ad["image_url"].startswith("/api/media/ads/"):
         filename = ad["image_url"].rsplit("/", 1)[-1]
         ad["image_url"] = ad_asset_api_path(filename)
     ad["image_url"] = absolutize_media_url(ad["image_url"], request)
@@ -520,6 +520,9 @@ def _strip(p: dict) -> dict:
     return p
 
 
+POST_SORT_ORDER = [("updated_at", -1), ("published_at", -1), ("created_at", -1)]
+
+
 @api.get("/categories")
 async def list_categories():
     counts = {c["slug"]: 0 for c in CATEGORIES_META}
@@ -529,9 +532,28 @@ async def list_categories():
     return [{**c, "count": counts.get(c["slug"], 0)} for c in CATEGORIES_META]
 
 
+@api.get("/placements/banner")
+async def get_banner_placement(request: Request, category: Optional[str] = None):
+    return await get_public_ad_for_category(category, request)
+
+
 @api.get("/ads/placement")
 async def get_ad_placement(request: Request, category: Optional[str] = None):
     return await get_public_ad_for_category(category, request)
+
+
+@api.get("/media/banners/{filename}")
+async def get_uploaded_banner_asset(filename: str):
+    asset = await db.media_assets.find_one({"kind": "ad", "filename": filename}, {"_id": 0})
+    if asset and asset.get("content"):
+        return Response(content=asset["content"], media_type=asset.get("content_type", "application/octet-stream"))
+
+    file_path = ADS_DIR / filename
+    if file_path.exists():
+        extension = file_path.suffix or ".bin"
+        return Response(content=file_path.read_bytes(), media_type=media_content_type(extension))
+
+    raise HTTPException(404, "Banner image not found")
 
 
 @api.get("/media/ads/{filename}")
@@ -565,7 +587,7 @@ async def list_posts(
             {"title": {"$regex": search, "$options": "i"}},
             {"excerpt": {"$regex": search, "$options": "i"}},
         ]
-    cursor = db.posts.find(q, {"_id": 0, "content": 0}).sort("published_at", -1).skip(skip).limit(limit)
+    cursor = db.posts.find(q, {"_id": 0, "content": 0}).sort(POST_SORT_ORDER).skip(skip).limit(limit)
     items = await cursor.to_list(limit)
     items = [normalize_post_media(item, request) for item in items]
     total = await db.posts.count_documents(q)
@@ -583,7 +605,7 @@ async def get_post(slug: str, request: Request):
     related_cursor = db.posts.find(
         {"category": post["category"], "slug": {"$ne": slug}, "published": True},
         {"_id": 0, "content": 0},
-    ).sort("published_at", -1).limit(3)
+    ).sort(POST_SORT_ORDER).limit(3)
     post["related"] = await related_cursor.to_list(3)
     post = normalize_post_media(post, request)
     post["related"] = [normalize_post_media(item, request) for item in post["related"]]
@@ -688,7 +710,7 @@ async def contact(payload: ContactIn):
 # ---------- Admin ----------
 @api.get("/admin/posts")
 async def admin_list_posts(request: Request, _: dict = Depends(get_current_admin)):
-    cursor = db.posts.find({}, {"_id": 0}).sort("published_at", -1)
+    cursor = db.posts.find({}, {"_id": 0}).sort(POST_SORT_ORDER)
     items = await cursor.to_list(500)
     return [normalize_post_media(item, request) for item in items]
 
@@ -748,6 +770,8 @@ async def admin_update_post(post_id: str, payload: PostUpdate, _: dict = Depends
         if "tags" not in updates:
             updates["tags"] = existing_post.get("tags", [])
     updates["tags"] = normalize_post_tags(category, updates.get("tags"))
+    if "content" in updates:
+        updates["read_time"] = max(3, len(updates["content"].split()) // 200)
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = await db.posts.update_one({"id": post_id}, {"$set": updates})
     if result.matched_count == 0:
@@ -892,6 +916,7 @@ async def startup():
     await db.posts.create_index("slug", unique=True)
     await db.posts.create_index("category")
     await db.posts.create_index("published_at")
+    await db.posts.create_index("updated_at")
     await db.ads.create_index("category")
     await db.ads.create_index("status")
     await db.users.create_index("email", unique=True)
