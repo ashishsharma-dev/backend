@@ -441,6 +441,10 @@ class CommentIn(BaseModel):
     content: str
 
 
+class CommentUpdate(BaseModel):
+    approved: bool
+
+
 class ReactionIn(BaseModel):
     type: str = Field(pattern="^(like|love|insightful)$")
 
@@ -804,6 +808,44 @@ async def admin_stats(_: dict = Depends(get_current_admin)):
         "subscribers": total_subs,
         "total_views": total_views,
     }
+
+
+@api.get("/admin/comments")
+async def admin_list_comments(_: dict = Depends(get_current_admin)):
+    comments = await db.comments.find({}, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+    post_slugs = list({comment.get("post_slug") for comment in comments if comment.get("post_slug")})
+
+    post_map = {}
+    if post_slugs:
+        posts = await db.posts.find(
+            {"slug": {"$in": post_slugs}},
+            {"_id": 0, "slug": 1, "title": 1},
+        ).to_list(len(post_slugs))
+        post_map = {post["slug"]: post.get("title", post["slug"]) for post in posts}
+
+    for comment in comments:
+        comment["post_title"] = post_map.get(comment.get("post_slug"), comment.get("post_slug", "Unknown post"))
+
+    return comments
+
+
+@api.put("/admin/comments/{comment_id}")
+async def admin_update_comment(comment_id: str, payload: CommentUpdate, _: dict = Depends(get_current_admin)):
+    result = await db.comments.update_one(
+        {"id": comment_id},
+        {"$set": {"approved": payload.approved}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Comment not found")
+    return await db.comments.find_one({"id": comment_id}, {"_id": 0})
+
+
+@api.delete("/admin/comments/{comment_id}")
+async def admin_delete_comment(comment_id: str, _: dict = Depends(get_current_admin)):
+    result = await db.comments.delete_one({"id": comment_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Comment not found")
+    return {"ok": True}
 
 
 @api.get("/admin/contacts")
