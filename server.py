@@ -11,10 +11,7 @@ import bcrypt
 import jwt
 import re
 import struct
-import base64
-import json
-from urllib.parse import quote, urlencode
-from urllib.request import Request as UrlRequest, urlopen
+from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 
@@ -206,34 +203,29 @@ def ad_asset_api_path(filename: str) -> str:
     return f"/api/media/banners/{filename}"
 
 
-def upload_ad_to_imgbb(content: bytes, extension: str) -> str:
-    api_key = env_str("IMGBB_API_KEY")
-    if not api_key:
-        raise RuntimeError("IMGBB_API_KEY is not configured")
+def post_cover_asset_api_path(filename: str) -> str:
+    return f"/api/media/post-covers/{filename}"
 
-    payload = {
-        "key": api_key,
-        "image": base64.b64encode(content).decode("ascii"),
-        "name": f"githy-ad-{uuid.uuid4().hex}{extension}",
-    }
-    expiration = env_str("IMGBB_EXPIRATION")
-    if expiration:
-        payload["expiration"] = expiration
 
-    request = UrlRequest(
-        "https://api.imgbb.com/1/upload",
-        data=urlencode(payload).encode("utf-8"),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
+async def persist_media_asset(kind: str, filename: str, content: bytes, content_type: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    await db.media_assets.update_one(
+        {"kind": kind, "filename": filename},
+        {
+            "$set": {
+                "kind": kind,
+                "filename": filename,
+                "content": content,
+                "content_type": content_type,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "created_at": now,
+            },
+        },
+        upsert=True,
     )
-
-    with urlopen(request, timeout=30) as response:
-        body = json.loads(response.read().decode("utf-8"))
-
-    if not body.get("success") or not body.get("data", {}).get("url"):
-        raise RuntimeError("Image host did not return a valid URL")
-
-    return body["data"]["url"]
 
 
 def canonical_category_slug(category: Optional[str]) -> Optional[str]:
@@ -340,6 +332,9 @@ def normalize_post_media(post: dict, request: Optional[Request] = None) -> dict:
     if post.get("category"):
         post["category"] = canonical_category_slug(post["category"])
     if post.get("cover_image"):
+        if post["cover_image"].startswith("/media/post-covers/") or post["cover_image"].startswith("/api/media/post-covers/"):
+            filename = post["cover_image"].rsplit("/", 1)[-1]
+            post["cover_image"] = post_cover_asset_api_path(filename)
         post["cover_image"] = absolutize_media_url(post["cover_image"], request)
     post["tags"] = normalize_post_tags(post.get("category"), post.get("tags"))
     return post
@@ -574,6 +569,20 @@ async def get_uploaded_ad_asset(filename: str):
     raise HTTPException(404, "Ad image not found")
 
 
+@api.get("/media/post-covers/{filename}")
+async def get_uploaded_post_cover_asset(filename: str):
+    asset = await db.media_assets.find_one({"kind": "post-cover", "filename": filename}, {"_id": 0})
+    if asset and asset.get("content"):
+        return Response(content=asset["content"], media_type=asset.get("content_type", "application/octet-stream"))
+
+    file_path = POST_COVERS_DIR / filename
+    if file_path.exists():
+        extension = file_path.suffix or ".bin"
+        return Response(content=file_path.read_bytes(), media_type=media_content_type(extension))
+
+    raise HTTPException(404, "Post cover image not found")
+
+
 @api.get("/posts")
 async def list_posts(
     request: Request,
@@ -755,7 +764,8 @@ async def admin_upload_post_cover(file: UploadFile = File(...), _: dict = Depend
     filename = f"{uuid.uuid4().hex}{extension}"
     target = POST_COVERS_DIR / filename
     target.write_bytes(content)
-    return {"image_url": f"/media/post-covers/{filename}"}
+    await persist_media_asset("post-cover", filename, content, media_content_type(extension))
+    return {"image_url": post_cover_asset_api_path(filename)}
 
 
 @api.put("/admin/posts/{post_id}")
@@ -872,34 +882,11 @@ async def admin_upload_ad_creative(file: UploadFile = File(...), _: dict = Depen
     if not extension:
         raise HTTPException(400, "Unsupported image format. Please upload PNG, JPG, GIF, or WebP.")
 
-    if env_str("IMGBB_API_KEY"):
-        try:
-            hosted_url = upload_ad_to_imgbb(content, extension)
-            return {"image_url": hosted_url, "width": width, "height": height}
-        except Exception as exc:
-            logging.exception("Failed to upload ad creative to imgbb; falling back to internal storage")
-
     ADS_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex}{extension}"
     target = ADS_DIR / filename
     target.write_bytes(content)
-    await db.media_assets.update_one(
-        {"kind": "ad", "filename": filename},
-        {
-            "$set": {
-                "kind": "ad",
-                "filename": filename,
-                "content": content,
-                "content_type": media_content_type(extension),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
-            "$setOnInsert": {
-                "id": str(uuid.uuid4()),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            },
-        },
-        upsert=True,
-    )
+    await persist_media_asset("ad", filename, content, media_content_type(extension))
     return {"image_url": ad_asset_api_path(filename), "width": width, "height": height}
 
 

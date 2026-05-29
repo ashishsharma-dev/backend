@@ -312,6 +312,21 @@ def test_admin_crud(admin_session):
     assert r5.status_code == 404
 
 
+def test_post_cover_upload_is_served_from_api(admin_session):
+    upload = admin_session.post(
+        f"{API}/admin/posts/upload-cover",
+        files={"file": ("cover.gif", io.BytesIO(gif_bytes(1200, 630)), "image/gif")},
+        timeout=20,
+    )
+    assert upload.status_code == 200
+    payload = upload.json()
+    assert payload["image_url"].startswith("/api/media/post-covers/")
+
+    asset = admin_session.get(f"{BASE_URL}{payload['image_url']}", timeout=20)
+    assert asset.status_code == 200
+    assert asset.headers["content-type"].startswith("image/")
+
+
 def test_ad_upload_validation_and_crud(admin_session):
     bad = admin_session.post(
         f"{API}/admin/ads/upload",
