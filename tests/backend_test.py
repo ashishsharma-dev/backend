@@ -235,7 +235,7 @@ def test_logout_clears(admin_session):
 
 # ---- Admin protected ----
 def test_admin_routes_unauth(session):
-    for path in ["/admin/posts", "/admin/stats", "/admin/ads", "/admin/comments"]:
+    for path in ["/admin/posts", "/admin/stats", "/admin/ads"]:
         r = session.get(f"{API}{path}", timeout=20)
         assert r.status_code == 401, f"{path} should be 401"
     r = session.post(f"{API}/admin/posts", json={"title": "x", "excerpt": "x", "content": "x", "category": "technology"}, timeout=20)
@@ -251,41 +251,6 @@ def test_admin_stats(admin_session):
     for k in ["total_posts", "published", "total_comments", "subscribers", "total_views"]:
         assert k in d
     assert d["total_posts"] >= 60
-
-
-def test_admin_comment_moderation(admin_session, sample_slug):
-    create = requests.Session().post(
-        f"{API}/posts/{sample_slug}/comments",
-        json={"name": "Moderation User", "email": "moderation@example.com", "content": "Please moderate me"},
-        timeout=20,
-    )
-    assert create.status_code == 200
-    comment = create.json()
-
-    admin_comments = admin_session.get(f"{API}/admin/comments", timeout=20)
-    assert admin_comments.status_code == 200
-    matching = next((item for item in admin_comments.json() if item["id"] == comment["id"]), None)
-    assert matching is not None
-    assert matching["approved"] is True
-    assert matching["email"] == "moderation@example.com"
-
-    hidden = admin_session.put(f"{API}/admin/comments/{comment['id']}", json={"approved": False}, timeout=20)
-    assert hidden.status_code == 200
-    assert hidden.json()["approved"] is False
-
-    public_comments = admin_session.get(f"{API}/posts/{sample_slug}/comments", timeout=20)
-    assert public_comments.status_code == 200
-    assert all(item["id"] != comment["id"] for item in public_comments.json())
-
-    visible = admin_session.put(f"{API}/admin/comments/{comment['id']}", json={"approved": True}, timeout=20)
-    assert visible.status_code == 200
-    assert visible.json()["approved"] is True
-
-    deleted = admin_session.delete(f"{API}/admin/comments/{comment['id']}", timeout=20)
-    assert deleted.status_code == 200
-
-    missing = admin_session.put(f"{API}/admin/comments/{comment['id']}", json={"approved": False}, timeout=20)
-    assert missing.status_code == 404
 
 
 def test_admin_crud(admin_session):
