@@ -235,11 +235,21 @@ def media_content_type(extension: str) -> str:
 
 
 def ad_asset_api_path(filename: str) -> str:
-    return f"/api/media/banners/{filename}"
+    return f"/api/media/ads/{filename}"
 
 
 def post_cover_asset_api_path(filename: str) -> str:
     return f"/api/media/post-covers/{filename}"
+
+
+def normalize_uploaded_ad_image_url(image_url: str) -> str:
+    value = image_url.strip()
+    for prefix in ("/api/media/ads/", "/api/media/banners/", "/media/ads/"):
+        if value.startswith(prefix):
+            filename = value.rsplit("/", 1)[-1]
+            if filename:
+                return ad_asset_api_path(filename)
+    raise HTTPException(400, "Advertisement images must be uploaded to the backend before saving.")
 
 
 async def persist_media_asset(kind: str, filename: str, content: bytes, content_type: str) -> None:
@@ -387,9 +397,8 @@ def normalize_ad_media(ad: dict, request: Optional[Request] = None) -> dict:
         ad["category"] = canonical_category_slug(ad["category"])
     if not ad.get("image_url"):
         return build_dummy_ad(ad.get("category"))
-    if ad["image_url"].startswith("/media/ads/") or ad["image_url"].startswith("/api/media/ads/"):
-        filename = ad["image_url"].rsplit("/", 1)[-1]
-        ad["image_url"] = ad_asset_api_path(filename)
+    if ad["image_url"].startswith(("/media/ads/", "/api/media/ads/", "/api/media/banners/")):
+        ad["image_url"] = normalize_uploaded_ad_image_url(ad["image_url"])
     ad["image_url"] = absolutize_media_url(ad["image_url"], request)
     return ad
 
@@ -892,7 +901,7 @@ async def admin_create_ad(payload: AdIn, _: dict = Depends(get_current_admin)):
     doc = {
         "id": str(uuid.uuid4()),
         "category": canonical_category_slug(payload.category),
-        "image_url": payload.image_url.strip(),
+        "image_url": normalize_uploaded_ad_image_url(payload.image_url),
         "hyperlink": str(payload.hyperlink).strip(),
         "status": payload.status,
         "created_at": now,
@@ -910,6 +919,8 @@ async def admin_update_ad(ad_id: str, payload: AdUpdate, _: dict = Depends(get_c
         raise HTTPException(400, "No fields to update")
     if "category" in updates:
         updates["category"] = canonical_category_slug(updates["category"])
+    if "image_url" in updates:
+        updates["image_url"] = normalize_uploaded_ad_image_url(updates["image_url"])
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = await db.ads.update_one({"id": ad_id}, {"$set": updates})
     if result.matched_count == 0:

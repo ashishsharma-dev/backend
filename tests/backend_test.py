@@ -348,11 +348,19 @@ def test_ad_upload_validation_and_crud(admin_session):
 
 
 def test_public_ad_ignores_newer_paused_creative(admin_session):
+    uploaded_active = admin_session.post(
+        f"{API}/admin/ads/upload",
+        files={"file": ("active.gif", io.BytesIO(gif_bytes(728, 90)), "image/gif")},
+        timeout=20,
+    )
+    assert uploaded_active.status_code == 200
+    active_image = uploaded_active.json()["image_url"]
+
     first = admin_session.post(
         f"{API}/admin/ads",
         json={
             "category": "travel-adventure",
-            "image_url": "https://example.com/active-ad.png",
+            "image_url": active_image,
             "hyperlink": "https://example.com/active",
             "status": "active",
         },
@@ -361,11 +369,19 @@ def test_public_ad_ignores_newer_paused_creative(admin_session):
     assert first.status_code == 200
     active_ad = first.json()
 
+    uploaded_paused = admin_session.post(
+        f"{API}/admin/ads/upload",
+        files={"file": ("paused.gif", io.BytesIO(gif_bytes(728, 90)), "image/gif")},
+        timeout=20,
+    )
+    assert uploaded_paused.status_code == 200
+    paused_image = uploaded_paused.json()["image_url"]
+
     second = admin_session.post(
         f"{API}/admin/ads",
         json={
             "category": "travel-adventure",
-            "image_url": "https://example.com/paused-ad.png",
+            "image_url": paused_image,
             "hyperlink": "https://example.com/paused",
             "status": "paused",
         },
@@ -378,7 +394,7 @@ def test_public_ad_ignores_newer_paused_creative(admin_session):
     assert public_ad.status_code == 200
     payload = public_ad.json()
     assert payload["is_dummy"] is False
-    assert payload["image_url"] == "https://example.com/active-ad.png"
+    assert payload["image_url"].endswith(active_image)
     assert payload["hyperlink"] == "https://example.com/active"
 
     assert admin_session.delete(f"{API}/admin/ads/{active_ad['id']}", timeout=20).status_code == 200
@@ -392,3 +408,18 @@ def test_ad_requires_hyperlink(admin_session):
         timeout=20,
     )
     assert r.status_code == 422
+
+
+def test_ad_rejects_external_image_hosts(admin_session):
+    r = admin_session.post(
+        f"{API}/admin/ads",
+        json={
+            "category": "sports",
+            "image_url": "https://i.ibb.co/example/banner.png",
+            "hyperlink": "https://example.com",
+            "status": "active",
+        },
+        timeout=20,
+    )
+    assert r.status_code == 400
+    assert "uploaded to the backend" in r.json()["detail"].lower()
