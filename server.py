@@ -59,6 +59,41 @@ def env_str(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def is_hosted_runtime() -> bool:
+    hosted_markers = (
+        "RENDER",
+        "RAILWAY_ENVIRONMENT",
+        "VERCEL",
+        "FLY_APP_NAME",
+        "HEROKU_APP_NAME",
+    )
+    return any(env_str(name) for name in hosted_markers)
+
+
+def is_production_environment() -> bool:
+    values = [
+        env_str("APP_ENV"),
+        env_str("ENVIRONMENT"),
+        env_str("NODE_ENV"),
+        env_str("PYTHON_ENV"),
+    ]
+    return any(value.lower() == "production" for value in values) or is_hosted_runtime()
+
+
+def should_seed_posts_on_startup() -> bool:
+    override = os.environ.get("SEED_POSTS_ON_STARTUP")
+    if override is not None:
+        return env_flag("SEED_POSTS_ON_STARTUP", False)
+    return not is_production_environment()
+
+
+def should_store_uploads_on_disk() -> bool:
+    override = os.environ.get("STORE_UPLOADS_ON_DISK")
+    if override is not None:
+        return env_flag("STORE_UPLOADS_ON_DISK", False)
+    return not is_hosted_runtime()
+
+
 def normalize_cors_origins(origins: List[str]) -> tuple[List[str], Optional[str]]:
     cleaned = []
     for origin in origins:
@@ -226,6 +261,13 @@ async def persist_media_asset(kind: str, filename: str, content: bytes, content_
         },
         upsert=True,
     )
+
+
+def persist_media_file_copy(directory: Path, filename: str, content: bytes) -> None:
+    if not should_store_uploads_on_disk():
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / filename).write_bytes(content)
 
 
 def canonical_category_slug(category: Optional[str]) -> Optional[str]:
@@ -756,11 +798,9 @@ async def admin_upload_post_cover(file: UploadFile = File(...), _: dict = Depend
     if not extension:
         raise HTTPException(400, "Unsupported image format. Please upload PNG, JPG, GIF, or WebP.")
 
-    POST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex}{extension}"
-    target = POST_COVERS_DIR / filename
-    target.write_bytes(content)
     await persist_media_asset("post-cover", filename, content, media_content_type(extension))
+    persist_media_file_copy(POST_COVERS_DIR, filename, content)
     return {"image_url": post_cover_asset_api_path(filename)}
 
 
@@ -840,11 +880,9 @@ async def admin_upload_ad_creative(file: UploadFile = File(...), _: dict = Depen
     if not extension:
         raise HTTPException(400, "Unsupported image format. Please upload PNG, JPG, GIF, or WebP.")
 
-    ADS_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex}{extension}"
-    target = ADS_DIR / filename
-    target.write_bytes(content)
     await persist_media_asset("ad", filename, content, media_content_type(extension))
+    persist_media_file_copy(ADS_DIR, filename, content)
     return {"image_url": ad_asset_api_path(filename), "width": width, "height": height}
 
 
@@ -897,9 +935,10 @@ async def root():
 # ---------- Startup ----------
 @app.on_event("startup")
 async def startup():
-    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    ADS_DIR.mkdir(parents=True, exist_ok=True)
-    POST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    if should_store_uploads_on_disk():
+        MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        ADS_DIR.mkdir(parents=True, exist_ok=True)
+        POST_COVERS_DIR.mkdir(parents=True, exist_ok=True)
     await db.posts.create_index("slug", unique=True)
     await db.posts.create_index("category")
     await db.posts.create_index("published_at")
@@ -919,27 +958,28 @@ async def startup():
     await db.ads.update_many({"category": "tech"}, {"$set": {"category": "technology"}})
     await db.posts.update_many({"category": "trading"}, {"$set": {"category": "trading-investment"}})
     await db.ads.update_many({"category": "trading"}, {"$set": {"category": "trading-investment"}})
-    for file_path in ADS_DIR.iterdir():
-        if not file_path.is_file():
-            continue
-        content = file_path.read_bytes()
-        await db.media_assets.update_one(
-            {"kind": "ad", "filename": file_path.name},
-            {
-                "$set": {
-                    "kind": "ad",
-                    "filename": file_path.name,
-                    "content": content,
-                    "content_type": media_content_type(file_path.suffix or ".bin"),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+    if ADS_DIR.exists():
+        for file_path in ADS_DIR.iterdir():
+            if not file_path.is_file():
+                continue
+            content = file_path.read_bytes()
+            await db.media_assets.update_one(
+                {"kind": "ad", "filename": file_path.name},
+                {
+                    "$set": {
+                        "kind": "ad",
+                        "filename": file_path.name,
+                        "content": content,
+                        "content_type": media_content_type(file_path.suffix or ".bin"),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    "$setOnInsert": {
+                        "id": str(uuid.uuid4()),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
                 },
-                "$setOnInsert": {
-                    "id": str(uuid.uuid4()),
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            },
-            upsert=True,
-        )
+                upsert=True,
+            )
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -963,9 +1003,15 @@ async def startup():
     # Seed posts
     count = await db.posts.count_documents({})
     if count == 0:
-        seed = get_seed_posts()
-        await db.posts.insert_many(seed)
-        logging.info("Seeded %d posts", len(seed))
+        if should_seed_posts_on_startup():
+            seed = get_seed_posts()
+            await db.posts.insert_many(seed)
+            logging.info("Seeded %d posts", len(seed))
+        else:
+            logging.warning(
+                "Posts collection is empty and auto-seeding is disabled. "
+                "Set SEED_POSTS_ON_STARTUP=true if you want demo content."
+            )
 
 
 @app.on_event("shutdown")
